@@ -1,0 +1,29 @@
+# Qt Creator
+*.pro.user
+*.pro.user.*
+CMakeLists.txt.user
+
+# Build
+build/
+debug/
+release/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# Qt Auto Generated
+moc_*
+qrc_*
+ui_*.h
+
+# VSCode
+.vscode/
+
+# Windows
+*.exe
+*.dll
+
+# Logs
+*.log
