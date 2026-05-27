@@ -161,8 +161,7 @@ def init_db():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ''')
     
-
-
+    # 离线消息表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS offline_messages (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -171,7 +170,7 @@ def init_db():
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             INDEX (to_user_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ''')
     
     conn.commit()
@@ -361,67 +360,27 @@ def save_message(from_user_id, to_user_id, content):
     conn.close()
     return message_id
 
-def get_messages(user_id1, user_id2, limit=20, before_time=None, after_time=None):
+def get_messages(user_id1, user_id2, limit=20, offset=0):
     """获取两个用户之间的消息
     
     Args:
         user_id1: 当前用户ID
         user_id2: 好友ID
         limit: 每次返回的消息数量
-        before_time: 获取此时间之前的消息（ISO格式字符串）
-        after_time: 获取此时间之后的消息（ISO格式字符串）
+        offset: 已加载的消息数量
     
     使用降序查询，返回最新消息在前，客户端需要反转以显示正确顺序
-    使用时间戳分页代替offset，避免本地消息与服务器消息排序不一致的问题
     """
     conn = get_db_connection()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
-    
-    if before_time and after_time:
-        # 加载指定时间范围内的消息
-        cursor.execute('''
-            SELECT m.id, m.from_user_id, m.to_user_id, m.content, m.created_at, u.username as from_username
-            FROM messages m
-            JOIN users u ON m.from_user_id = u.id
-            WHERE ((m.from_user_id = %s AND m.to_user_id = %s) OR (m.from_user_id = %s AND m.to_user_id = %s))
-              AND m.created_at < %s
-              AND m.created_at > %s
-            ORDER BY m.created_at DESC
-            LIMIT %s
-        ''', (user_id1, user_id2, user_id2, user_id1, before_time, after_time, int(limit)))
-    elif before_time:
-        # 加载 before_time 之前的消息（历史消息）
-        cursor.execute('''
-            SELECT m.id, m.from_user_id, m.to_user_id, m.content, m.created_at, u.username as from_username
-            FROM messages m
-            JOIN users u ON m.from_user_id = u.id
-            WHERE ((m.from_user_id = %s AND m.to_user_id = %s) OR (m.from_user_id = %s AND m.to_user_id = %s))
-              AND m.created_at < %s
-            ORDER BY m.created_at DESC
-            LIMIT %s
-        ''', (user_id1, user_id2, user_id2, user_id1, before_time, int(limit)))
-    elif after_time:
-        # 加载 after_time 之后的消息（更新的消息）
-        cursor.execute('''
-            SELECT m.id, m.from_user_id, m.to_user_id, m.content, m.created_at, u.username as from_username
-            FROM messages m
-            JOIN users u ON m.from_user_id = u.id
-            WHERE ((m.from_user_id = %s AND m.to_user_id = %s) OR (m.from_user_id = %s AND m.to_user_id = %s))
-              AND m.created_at > %s
-            ORDER BY m.created_at ASC
-            LIMIT %s
-        ''', (user_id1, user_id2, user_id2, user_id1, after_time, int(limit)))
-    else:
-        # 首次加载，获取最新消息
-        cursor.execute('''
-            SELECT m.id, m.from_user_id, m.to_user_id, m.content, m.created_at, u.username as from_username
-            FROM messages m
-            JOIN users u ON m.from_user_id = u.id
-            WHERE (m.from_user_id = %s AND m.to_user_id = %s) OR (m.from_user_id = %s AND m.to_user_id = %s)
-            ORDER BY m.created_at DESC
-            LIMIT %s
-        ''', (user_id1, user_id2, user_id2, user_id1, int(limit)))
-    
+    cursor.execute('''
+        SELECT m.id, m.from_user_id, m.to_user_id, m.content, m.created_at, u.username as from_username
+        FROM messages m
+        JOIN users u ON m.from_user_id = u.id
+        WHERE (m.from_user_id = %s AND m.to_user_id = %s) OR (m.from_user_id = %s AND m.to_user_id = %s)
+        ORDER BY m.created_at DESC
+        LIMIT {} OFFSET {}
+    '''.format(int(limit), int(offset)), (user_id1, user_id2, user_id2, user_id1))
     result = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -429,7 +388,7 @@ def get_messages(user_id1, user_id2, limit=20, before_time=None, after_time=None
     # 将 datetime 对象转换为字符串
     for msg in result:
         if isinstance(msg.get('created_at'), datetime.datetime):
-            msg['created_at'] = msg['created_at'].isoformat()
+            msg['created_at'] = msg['created_at'].strftime('%Y-%m-%d %H:%M:%S')
     
     return result
 
@@ -466,7 +425,7 @@ def get_offline_messages(user_id):
     # 将 datetime 对象转换为字符串
     for msg in result:
         if isinstance(msg.get('created_at'), datetime.datetime):
-            msg['created_at'] = msg['created_at'].isoformat()
+            msg['created_at'] = msg['created_at'].strftime('%Y-%m-%d %H:%M:%S')
     
     return result
 
@@ -664,15 +623,14 @@ class GetMessagesHandler(BaseHandler):
             user_id = self.get_argument('user_id', None)
             friend_id = self.get_argument('friend_id', None)
             limit = int(self.get_argument('limit', 20))
-            before_time = self.get_argument('before_time', None)
-            after_time = self.get_argument('after_time', None)
+            offset = int(self.get_argument('offset', 0))
             
             if not user_id or not friend_id:
                 self.write_json({'success': False, 'message': '参数错误'})
                 return
             
             messages = await tornado.ioloop.IOLoop.current().run_in_executor(
-                db_executor, get_messages, int(user_id), int(friend_id), limit, before_time, after_time)
+                db_executor, get_messages, int(user_id), int(friend_id), limit, offset)
             self.write_json({'success': True, 'data': messages})
         except Exception as e:
             self.write_json({'success': False, 'message': str(e)})
@@ -720,79 +678,110 @@ class ChatWebSocketHandler(tornado.websocket.WebSocketHandler):
             if offline_messages:
                 self.write_message(json.dumps({
                     'type': 'offline_messages',
-                    'data': offline_messages
+                    'messages': offline_messages
                 }))
     
     def handle_send_message(self, data):
         """处理发送消息"""
-        from_user_id = data.get('from_user_id')
-        to_user_id = data.get('to_user_id')
-        content = data.get('content')
-        client_msg_id = data.get('client_msg_id', '')
+        try:
+            from_user_id = data.get('from_user_id')
+            to_user_id = data.get('to_user_id')
+            content = data.get('content')
+            client_msg_id = data.get('client_msg_id', '')
+            
+            print(f"收到消息 - from_user_id: {from_user_id}({type(from_user_id)}), to_user_id: {to_user_id}({type(to_user_id)}), client_msg_id: {client_msg_id}")
+            
+            # 转换为整数（客户端可能发送字符串）
+            try:
+                from_user_id = int(from_user_id) if from_user_id is not None else None
+                to_user_id = int(to_user_id) if to_user_id is not None else None
+            except (ValueError, TypeError) as e:
+                print(f"用户ID转换失败: {e}")
+                self.write_message(json.dumps({
+                    'type': 'message_send_failed',
+                    'client_msg_id': client_msg_id,
+                    'message': '用户ID格式错误'
+                }))
+                return
+            
+            # 检查参数
+            if from_user_id is None or to_user_id is None or not content:
+                print(f"参数错误 - from_user_id: {from_user_id}, to_user_id: {to_user_id}, content: {content}")
+                self.write_message(json.dumps({
+                    'type': 'message_send_failed',
+                    'client_msg_id': client_msg_id,
+                    'message': '参数错误'
+                }))
+                return
         
-        if not from_user_id or not to_user_id or not content:
-            self.write_message(json.dumps({
-                'type': 'message_send_failed',
-                'client_msg_id': client_msg_id,
-                'message': '参数错误'
-            }))
-            return
-        
-        # 去重检查：如果 client_msg_id 已处理过，直接返回 ACK 不重复保存
-        if client_msg_id and client_msg_id in processed_msg_ids:
+            # 去重检查：如果 client_msg_id 已处理过，直接返回 ACK 不重复保存
+            if client_msg_id and client_msg_id in processed_msg_ids:
+                print(f"消息已处理过，直接返回ACK - client_msg_id: {client_msg_id}")
+                self.write_message(json.dumps({
+                    'type': 'message_sent',
+                    'client_msg_id': client_msg_id,
+                    'data': processed_msg_ids[client_msg_id]
+                }))
+                return
+            
+            # 保存消息到数据库
+            message_id = save_message(from_user_id, to_user_id, content)
+            print(f"消息已保存到数据库 - message_id: {message_id}")
+            
+            # 获取发送者信息
+            from_user = get_user_by_id(from_user_id)
+            from_username = from_user['username'] if from_user else 'unknown'
+            
+            message_data = {
+                'id': message_id,
+                'from_user_id': from_user_id,
+                'to_user_id': to_user_id,
+                'content': content,
+                'from_username': from_username,
+                'created_at': 'now'
+            }
+            
+            # 缓存已处理的消息 ID（用于去重）
+            if client_msg_id:
+                processed_msg_ids[client_msg_id] = message_data
+            
+            # 通知发送者消息已发送（包含 client_msg_id 用于客户端确认）
+            print(f"发送ACK - client_msg_id: {client_msg_id}")
             self.write_message(json.dumps({
                 'type': 'message_sent',
                 'client_msg_id': client_msg_id,
-                'data': processed_msg_ids[client_msg_id]
+                'data': message_data
             }))
-            return
-        
-        # 保存消息到数据库
-        message_id = save_message(from_user_id, to_user_id, content)
-        
-        # 获取发送者信息
-        from_user = get_user_by_id(from_user_id)
-        from_username = from_user['username'] if from_user else 'unknown'
-        
-        message_data = {
-            'id': message_id,
-            'from_user_id': from_user_id,
-            'to_user_id': to_user_id,
-            'content': content,
-            'from_username': from_username,
-            'created_at': datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-        }
-        
-        # 缓存已处理的消息 ID（用于去重）
-        if client_msg_id:
-            processed_msg_ids[client_msg_id] = message_data
-        
-        # 通知发送者消息已发送（包含 client_msg_id 用于客户端确认）
-        self.write_message(json.dumps({
-            'type': 'message_sent',
-            'client_msg_id': client_msg_id,
-            'data': message_data
-        }))
-        
-        # 如果是发送给AI好友，生成AI回复
-        if to_user_id == AI_FRIEND_ID:
-            print(f"发送给AI好友，生成回复")
-            self.handle_ai_message(from_user_id, content)
-            return
-        
-        # 尝试直接发送给在线用户
-        with online_users_lock:
-            if to_user_id in online_users:
-                target_ws = online_users[to_user_id]
-                target_ws.write_message(json.dumps({
-                    'type': 'new_message',
-                    'data': message_data
-                }))
-                print(f"消息已推送给用户 {to_user_id}")
-            else:
-                # 保存离线消息
-                save_offline_message(from_user_id, to_user_id, content)
-                print(f"用户 {to_user_id} 离线，消息已存储到离线消息表")
+            
+            # 如果是发送给AI好友，生成AI回复
+            if to_user_id == AI_FRIEND_ID:
+                print(f"发送给AI好友，生成回复")
+                self.handle_ai_message(from_user_id, content)
+                return
+            
+            # 尝试直接发送给在线用户
+            with online_users_lock:
+                if to_user_id in online_users:
+                    target_ws = online_users[to_user_id]
+                    target_ws.write_message(json.dumps({
+                        'type': 'new_message',
+                        'data': message_data
+                    }))
+                    print(f"消息已推送给用户 {to_user_id}")
+                else:
+                    # 保存离线消息
+                    save_offline_message(from_user_id, to_user_id, content)
+                    print(f"用户 {to_user_id} 离线，消息已存储到离线消息表")
+                    
+        except Exception as e:
+            print(f"消息处理异常: {e}")
+            import traceback
+            traceback.print_exc()
+            self.write_message(json.dumps({
+                'type': 'message_send_failed',
+                'client_msg_id': data.get('client_msg_id', ''),
+                'message': f'服务器错误: {str(e)}'
+            }))
     
     def handle_ai_message(self, user_id, content):
         """处理AI消息并生成回复"""
@@ -817,7 +806,7 @@ class ChatWebSocketHandler(tornado.websocket.WebSocketHandler):
                         'to_user_id': user_id,
                         'content': ai_reply,
                         'from_username': AI_FRIEND_NAME,
-                        'created_at': datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+                        'created_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     }
                     
                     # 使用之前保存的 io_loop 引用，在主事件循环中发送消息

@@ -431,8 +431,25 @@ void ApiManager::sendPendingMessage(const PendingMessage& msg)
 
 void ApiManager::getMessages(int userId, int friendId, int limit, int offset)
 {
-    QUrl url(m_serverUrl + QString("/api/get_messages?user_id=%1&friend_id=%2&limit=%3&offset=%4")
-             .arg(userId).arg(friendId).arg(limit).arg(offset));
+    Q_UNUSED(offset);
+    getMessages(userId, friendId, limit, QString(), QString());
+}
+
+void ApiManager::getMessages(int userId, int friendId, int limit, const QString& beforeTime)
+{
+    getMessages(userId, friendId, limit, beforeTime, QString());
+}
+
+void ApiManager::getMessages(int userId, int friendId, int limit, const QString& beforeTime, const QString& afterTime)
+{
+    QString urlStr = QString("/api/get_messages?user_id=%1&friend_id=%2&limit=%3").arg(userId).arg(friendId).arg(limit);
+    if (!beforeTime.isEmpty()) {
+        urlStr += QString("&before_time=%1").arg(beforeTime);
+    }
+    if (!afterTime.isEmpty()) {
+        urlStr += QString("&after_time=%1").arg(afterTime);
+    }
+    QUrl url(m_serverUrl + urlStr);
     QNetworkRequest request(url);
     QNetworkReply* reply = m_networkManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -585,7 +602,7 @@ void ApiManager::onWebSocketTextMessageReceived(const QString& message)
     if (type == "new_message") {
         emit newMessageReceived(obj["data"].toObject());
     } else if (type == "offline_messages") {
-        emit offlineMessagesReceived(obj["messages"].toArray());
+        emit offlineMessagesReceived(obj["data"].toArray());
     } else if (type == "message_sent") {
         // 收到服务端 ACK，从待确认队列中移除
         QString clientMsgId = obj["client_msg_id"].toString();

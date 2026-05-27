@@ -34,8 +34,14 @@ ChatPanel::ChatPanel(QWidget *parent)
         layout->setAlignment(Qt::AlignTop);
     }
     
-    ui->friendsScrollAreaWidgetContents->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     ui->historyVerticalLayout->setAlignment(Qt::AlignTop);
+    // ✅ 添加修复代码：
+    ui->historyVerticalLayout->setContentsMargins(0, 0, 0, 5);
+    ui->historyScrollAreaWidgetContents->setSizePolicy(
+        QSizePolicy::Preferred, 
+        QSizePolicy::Ignored
+    );
+    ui->historyScrollArea->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
     
     // 添加/删除好友相关信号
     connect(m_apiManager, &ApiManager::friendsReceived, this, &ChatPanel::onFriendsReceived);
@@ -145,6 +151,15 @@ void ChatPanel::onFriendButtonClicked(int friendId)
     // 清空已加载消息ID集合（切换好友时重置）
     m_loadedMessageIds.clear();
 
+    // 重置最后加载时间（切换好友时重置）
+    m_lastLoadedTime = QDateTime();
+    
+    // 重置最后消息时间（切换好友时重置，用于时间标签判断）
+    m_lastMessageTime = QDateTime();
+    
+    // 设置为首次加载状态
+    m_isFirstLoad = true;
+
     // 更新聊天标题
     ui->label->setText(QString("与 %1 聊天").arg(m_currentFriendName));
 
@@ -156,7 +171,7 @@ void ChatPanel::onFriendButtonClicked(int friendId)
     ui->inputTextEdit->setText(unsentText);
 
     // 先加载本地缓存的消息（快速显示）
-    QList<ChatMessage> localMessages = loadMessagesFromLocal(friendId);
+    QList<ChatMessage> localMessages = loadMessagesFromLocal(friendId); // 这里面加载的信息，时间是不带T的
 
     if (!localMessages.isEmpty()) {
         // 按时间排序（升序）
@@ -173,18 +188,28 @@ void ChatPanel::onFriendButtonClicked(int friendId)
                 addTimeLabel(msg.createdAt);
             }
             addMessageToLayout(msg);
-            m_lastMessageTimeMap[m_currentFriendId] = msg.createdAt;
+            
+            // 更新最后消息时间（用于时间标签判断）
+            m_lastMessageTime = msg.createdAt;
         }
 
-        // 更新offset，避免滚动加载时重复加载本地消息
-        m_messageOffset = localMessages.size();
+        // 设置最后加载时间为最早的本地消息时间，用于后续历史消息分页
+        m_lastLoadedTime = localMessages.first().createdAt;
     }
 
-    // 加载服务器消息
-    loadMessages(m_messageOffset);
+    // 加载服务器消息：
+    // - 如果本地有消息，获取比本地最新消息更新的内容（使用 after_time）
+    // - 如果本地没有消息，获取最新消息（不传递任何时间参数）
+    QString afterTime;
+    QString beforeTime;
+    if (!localMessages.isEmpty()) {
+        afterTime = localMessages.last().createdAt.toString("yyyy-MM-ddTHH:mm:ss");
+    }
+    
+    loadMessages(beforeTime, afterTime);
 
     // 延迟滚动到底部（等待布局更新完成）
-    QTimer::singleShot(0, this, [this]() {
+    QTimer::singleShot(30, this, [this]() {
         QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
         bar->setValue(bar->maximum());
     });
@@ -324,7 +349,7 @@ void ChatPanel::onMessageSent(const QJsonObject& message)
     msg.fromUsername = m_currentUser.username;
     
     QString timeStr = message["created_at"].toString();
-    msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+    msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-ddTHH:mm:ss");
     
     // 显示时间标签（如果间隔超过10分钟）
     if (shouldShowTimeLabel(msg.createdAt)) {
@@ -340,11 +365,14 @@ void ChatPanel::onMessageSent(const QJsonObject& message)
     // 删除未发送消息缓存（消息已发送成功）（这个缓存是在切换好友的时候，保证输入框中的内容还在）
     deleteUnsentMessage(m_currentFriendId);
     
-    m_lastMessageTimeMap[m_currentFriendId] = msg.createdAt;
+    // 更新最后消息时间（用于时间标签判断）
+    m_lastMessageTime = msg.createdAt;
     
     // 自动滚动到底部
-    QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
-    bar->setValue(bar->maximum());
+    QTimer::singleShot(30, this, [=]() {
+        QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+        bar->setValue(bar->maximum());
+    });
 }
 
 void ChatPanel::onMessageSendFailed(const QString& error)
@@ -353,12 +381,12 @@ void ChatPanel::onMessageSendFailed(const QString& error)
     ui->inputTextEdit->clear();
 }
 
-void ChatPanel::loadMessages(int offset)
+void ChatPanel::loadMessages(const QString& beforeTime, const QString& afterTime)
 {
     if (m_currentFriendId == -1 || m_isLoadingMessages) return;
     
     m_isLoadingMessages = true;
-    m_apiManager->getMessages(m_currentUser.id, m_currentFriendId, 20, offset);
+    m_apiManager->getMessages(m_currentUser.id, m_currentFriendId, 20, beforeTime, afterTime);
 }
 
 void ChatPanel::onMessagesReceived(const QJsonArray& messages)
@@ -366,7 +394,7 @@ void ChatPanel::onMessagesReceived(const QJsonArray& messages)
     m_isLoadingMessages = false;
     
     if (messages.isEmpty()) {
-        if (m_messageOffset == 0) {
+        if (!m_lastLoadedTime.isValid() && m_loadedMessageIds.isEmpty()) {
             ui->label->setText(QString("与 %1 聊天 (暂无消息)").arg(m_currentFriendName));
         }
         return;
@@ -383,8 +411,10 @@ void ChatPanel::onMessagesReceived(const QJsonArray& messages)
         }
     }
     
-    // 服务器返回的是按时间倒序，需要反转
+    // 解析消息
     QList<ChatMessage> msgList;
+    bool isHistoryLoad = !m_isFirstLoad; // 是否是加载历史消息
+    
     for (const QJsonValue& val : messages) {
         QJsonObject obj = val.toObject();
         ChatMessage msg;
@@ -394,21 +424,27 @@ void ChatPanel::onMessagesReceived(const QJsonArray& messages)
         msg.fromUsername = obj["from_username"].toString();
         msg.content = obj["content"].toString();
         QString timeStr = obj["created_at"].toString();
-        msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+        msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-ddTHH:mm:ss");
         msgList.append(msg);
         
         // 保存到本地
         saveMessageToLocal(msg);
     }
     
-    // 服务器返回的是降序（最新在前），需要反转成升序（最旧在前，最新在后）
-    std::reverse(msgList.begin(), msgList.end());
+    // 判断是否需要反转：
+    // - 首次加载（获取更新消息）：服务器返回升序，不需要反转
+    // - 滚动加载历史消息：服务器返回降序，需要反转成升序
+    if (isHistoryLoad) {
+        std::reverse(msgList.begin(), msgList.end());
+    }
     
-    // 使用临时变量跟踪遍历过程中的最后消息时间（用于时间标签判断）
-    QDateTime tempLastTime = m_lastMessageTimeMap.value(m_currentFriendId);
+    // 记录插入前的布局数量，用于历史消息插入
+    int layoutCount = ui->historyVerticalLayout->count();
     
-    // 根据加载类型选择插入方式
-    for (const ChatMessage& msg : msgList) {
+    // 遍历消息列表
+    for (int i = 0; i < msgList.size(); ++i) {
+        const ChatMessage& msg = msgList[i];
+        
         // 跳过本地已加载的消息（去重）
         if (m_loadedMessageIds.contains(msg.id)) {
             continue;
@@ -416,24 +452,9 @@ void ChatPanel::onMessagesReceived(const QJsonArray& messages)
         // 记录新加载的消息ID
         m_loadedMessageIds.insert(msg.id);
 
-        // 检查是否需要显示时间标签（使用临时变量）
-        bool shouldShow = false;
-        if (!tempLastTime.isValid()) {
-            shouldShow = true;
-        } else {
-            int minutesDiff = tempLastTime.secsTo(msg.createdAt) / 60;
-            shouldShow = minutesDiff >= 10;
-        }
-        
-        if (shouldShow) {
-            QHBoxLayout* timeLayout = new QHBoxLayout();
-            QLabel* timeLabel = new QLabel(msg.createdAt.toString("yyyy-MM-dd HH:mm"), 
-                                          ui->historyScrollAreaWidgetContents);
-            timeLabel->setAlignment(Qt::AlignCenter);
-            timeLabel->setStyleSheet("color: #999; font-size: 12px; padding: 5px 0;");
-            timeLayout->addWidget(timeLabel);
-            timeLayout->setAlignment(Qt::AlignCenter);
-            ui->historyVerticalLayout->addLayout(timeLayout);
+        // 检查是否需要显示时间标签（从界面布局获取最新消息时间）
+        if (shouldShowTimeLabel(msg.createdAt)) {
+            addTimeLabel(msg.createdAt, isHistoryLoad);
         }
         
         MessageItem* item = new MessageItem(
@@ -443,33 +464,73 @@ void ChatPanel::onMessagesReceived(const QJsonArray& messages)
             ui->historyScrollAreaWidgetContents
         );
         
+        // 设置消息时间属性，用于后续时间标签判断
+        item->setProperty("messageTime", msg.createdAt);
+        
         QHBoxLayout* rowLayout = new QHBoxLayout();
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        
-        if (msg.fromUserId == m_currentUser.id) {
-            rowLayout->addStretch();
-            rowLayout->addWidget(item);
+        rowLayout->addWidget(item);
+
+        // 根据加载类型选择插入位置：
+        // - 首次加载（获取更新消息）：添加到末尾
+        // - 滚动加载历史消息：插入到前面
+        if (isHistoryLoad) {
+            ui->historyVerticalLayout->insertLayout(0, rowLayout);
         } else {
-            rowLayout->addWidget(item);
-            rowLayout->addStretch();
+            ui->historyVerticalLayout->addLayout(rowLayout);
         }
         
-        // 总是添加到末尾（保持升序）
-        ui->historyVerticalLayout->addLayout(rowLayout);
-        
-        // 更新临时变量和Map
-        tempLastTime = msg.createdAt;
-        m_lastMessageTimeMap[m_currentFriendId] = msg.createdAt;
+        // 更新最后消息时间（用于时间标签判断）
+        m_lastMessageTime = msg.createdAt;
     }
     
-    // 更新offset
-    m_messageOffset += messages.size();
+    // 更新最后加载时间（用于下次分页）
+    if (!msgList.isEmpty()) {
+        if (isHistoryLoad) {
+            // 历史消息加载：更新为当前批次最早的消息时间
+            m_lastLoadedTime = msgList.first().createdAt;
+        } else {
+            // 首次加载：如果本地有消息，保持最早时间；否则更新为当前最早时间
+            if (!m_lastLoadedTime.isValid()) {
+                m_lastLoadedTime = msgList.first().createdAt;
+            }
+        }
+    }
 
-    // 延迟滚动到底部（等待布局更新完成）
-    QTimer::singleShot(0, this, [this]() {
-        QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
-        bar->setValue(bar->maximum());
-    });
+    // 首次加载完成后，设置为非首次加载状态
+    m_isFirstLoad = false;
+
+    // 延迟处理 - 等待布局更新完成
+    if (!isHistoryLoad) {
+        // 首次加载：滚动到底部并检查是否需要自动加载历史消息
+        QTimer::singleShot(30, this, [this]() {
+            QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+            bar->setValue(bar->maximum());
+            
+            // 如果没有滚动条（内容太少），自动加载更多历史消息
+            autoLoadHistoryMessages();
+        });
+    } else {
+        // 历史消息加载：检查是否需要继续加载更多
+        QTimer::singleShot(0, this, [this, hasMore = !msgList.isEmpty()]() {
+            if (hasMore) {
+                autoLoadHistoryMessages();
+            }
+        });
+    }
+}
+
+void ChatPanel::autoLoadHistoryMessages()
+{
+    QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+    
+    // 如果滚动条不可见（maximum == 0 表示内容高度 <= 可视区域高度）
+    // 且还有更多消息可加载（m_lastLoadedTime 有效）
+    // 且当前没有正在加载
+    if (bar->maximum() == 0 && m_lastLoadedTime.isValid() && !m_isLoadingMessages && m_currentFriendId != -1) {
+        QString beforeTime = m_lastLoadedTime.toString("yyyy-MM-ddTHH:mm:ss");
+        loadMessages(beforeTime);
+    }
 }
 
 void ChatPanel::onMessagesGetFailed(const QString& error)
@@ -482,7 +543,11 @@ void ChatPanel::onScrollBarValueChanged(int value)
 {
     // 当滚动到顶部时加载更多历史消息
     if (value == 0 && !m_isLoadingMessages && m_currentFriendId != -1) {
-        loadMessages(m_messageOffset);
+        QString beforeTime;
+        if (m_lastLoadedTime.isValid()) {
+            beforeTime = m_lastLoadedTime.toString("yyyy-MM-ddTHH:mm:ss");
+        }
+        loadMessages(beforeTime);
     }
 }
 
@@ -497,31 +562,39 @@ void ChatPanel::addMessageToLayout(const ChatMessage& msg)
     );
     
     // 指定父对象，确保正确的对象树关系
-    QHBoxLayout* rowLayout = new QHBoxLayout(ui->historyScrollAreaWidgetContents);
+    QHBoxLayout* rowLayout = new QHBoxLayout();
     rowLayout->setContentsMargins(0, 0, 0, 0);
     
-    if (msg.fromUserId == m_currentUser.id) {
-        rowLayout->addStretch();
-        rowLayout->addWidget(item);
-    } else {
-        rowLayout->addWidget(item);
-        rowLayout->addStretch();
-    }
+    // if (msg.fromUserId == m_currentUser.id) {
+    //     rowLayout->addStretch();
+    //     rowLayout->addWidget(item);
+    // } else {
+    //     rowLayout->addWidget(item);
+    //     rowLayout->addStretch();
+    // }
+
+    rowLayout->addWidget(item);
     
     ui->historyVerticalLayout->addLayout(rowLayout);
 }
 
-void ChatPanel::addTimeLabel(const QDateTime& time)
+void ChatPanel::addTimeLabel(const QDateTime& time, bool insertAtBeginning)
 {
     // 指定父对象，确保正确的对象树关系
-    QHBoxLayout* timeLayout = new QHBoxLayout(ui->historyScrollAreaWidgetContents);
-    QLabel* timeLabel = new QLabel(time.toString("yyyy-MM-dd HH:mm"), 
+    QHBoxLayout* timeLayout = new QHBoxLayout();
+    QLabel* timeLabel = new QLabel(time.toString("yyyy-MM-dd HH:mm"),
                                   ui->historyScrollAreaWidgetContents);
     timeLabel->setAlignment(Qt::AlignCenter);
     timeLabel->setStyleSheet("color: #999; font-size: 12px; padding: 5px 0;");
     timeLayout->addWidget(timeLabel);
     timeLayout->setAlignment(Qt::AlignCenter);
-    ui->historyVerticalLayout->addLayout(timeLayout);
+    
+    // 根据参数选择插入位置
+    if (insertAtBeginning) {
+        ui->historyVerticalLayout->insertLayout(0, timeLayout);
+    } else {
+        ui->historyVerticalLayout->addLayout(timeLayout);
+    }
 }
 
 
@@ -560,13 +633,12 @@ void ChatPanel::clearChatHistory()
 
 bool ChatPanel::shouldShowTimeLabel(const QDateTime& currentTime)
 {
-    QDateTime lastTime = m_lastMessageTimeMap.value(m_currentFriendId);
-    if (!lastTime.isValid()) {
+    if (!m_lastMessageTime.isValid()) {
         return true;
     }
     
     // 超过10分钟显示时间标签
-    int minutesDiff = lastTime.secsTo(currentTime) / 60;
+    int minutesDiff = m_lastMessageTime.secsTo(currentTime) / 60;
     return minutesDiff >= 10;
 }
 
@@ -722,10 +794,12 @@ void ChatPanel::onNewMessageReceived(const QJsonObject& message)
     msg.content = message["content"].toString();
     msg.fromUsername = message["from_username"].toString();
     QString timeStr = message["created_at"].toString();
-    msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-dd HH:mm:ss");
+    qDebug() << timeStr;
+    msg.createdAt = QDateTime::fromString(timeStr, "yyyy-MM-ddTHH:mm:ss");
     
     saveMessageToLocal(msg);
     
+
     // 如果是当前聊天好友的消息，显示到界面
     if (isCurrentFriend && m_currentFriendId != -1) {
         // 显示时间标签（如果间隔超过10分钟）
@@ -736,11 +810,16 @@ void ChatPanel::onNewMessageReceived(const QJsonObject& message)
         // 添加消息到界面
         addMessageToLayout(msg);
         
-        m_lastMessageTimeMap[m_currentFriendId] = msg.createdAt;
+        // 更新最后消息时间（用于时间标签判断）
+        m_lastMessageTime = msg.createdAt;
         
         // 自动滚动到底部
-        QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
-        bar->setValue(bar->maximum());
+        // QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+        // bar->setValue(bar->maximum());
+        QTimer::singleShot(30, this, [=]() {
+            QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+            bar->setValue(bar->maximum());
+        });
     }
 }
 
@@ -777,13 +856,16 @@ void ChatPanel::onOfflineMessagesReceived(const QJsonArray& messages)
             // 添加消息到界面
             addMessageToLayout(msg);
             
-            m_lastMessageTimeMap[m_currentFriendId] = msg.createdAt;
+            // 更新最后消息时间（用于时间标签判断）
+            m_lastMessageTime = msg.createdAt;
         }
     }
     
     // 自动滚动到底部
-    QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
-    bar->setValue(bar->maximum());
+    QTimer::singleShot(30, this, [=]() {
+        QScrollBar* bar = ui->historyScrollArea->verticalScrollBar();
+        bar->setValue(bar->maximum());
+    });
 }
 
 void ChatPanel::onWebSocketConnected()

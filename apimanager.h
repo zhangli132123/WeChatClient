@@ -60,6 +60,8 @@ public:
     // 消息相关API
     void sendMessage(int fromUserId, int toUserId, const QString& content);
     void getMessages(int userId, int friendId, int limit = 20, int offset = 0);
+    void getMessages(int userId, int friendId, int limit, const QString& beforeTime);
+    void getMessages(int userId, int friendId, int limit, const QString& beforeTime, const QString& afterTime);
     
     // WebSocket 相关
     void connectWebSocket(int userId);

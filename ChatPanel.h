@@ -71,20 +71,25 @@ private:
     QString m_currentFriendName;
     int m_messageOffset;
     bool m_isLoadingMessages;
-    QMap<int, QDateTime> m_lastMessageTimeMap;  // 每个好友的最后消息时间
+    bool m_isFirstLoad;  // 是否是首次加载（获取更新消息）
+
     QSet<int> m_loadedMessageIds;  // 已加载的消息ID集合，用于服务器消息去重
+    QDateTime m_lastLoadedTime;  // 最后加载消息的时间，用于时间戳分页
+    QDateTime m_lastMessageTime;  // 当前聊天的最后消息时间（用于时间标签判断）
     
     void loadFriends();
     void addFriendButton(int friendId, const QString& friendName);
     void sendMessage();
-    void loadMessages(int offset = 0);
+    void loadMessages(const QString& beforeTime = QString(), const QString& afterTime = QString());
     void addMessageToLayout(const ChatMessage& msg);
-    void addTimeLabel(const QDateTime& time);
+    void addTimeLabel(const QDateTime& time, bool insertAtBeginning = false);
     void deleteLocalMessages(int friendId);
     void clearChatHistory();
     bool shouldShowTimeLabel(const QDateTime& currentTime);
+    QDateTime getLatestMessageTimeFromLayout();  // 从界面获取最新消息时间
     void saveMessageToLocal(const ChatMessage& msg);
     QList<ChatMessage> loadMessagesFromLocal(int friendId);
+    void autoLoadHistoryMessages();  // 自动加载历史消息直到出现滚动条
     void saveUnsentMessage(int friendId, const QString& content);
     QString loadUnsentMessage(int friendId);
     void deleteUnsentMessage(int friendId);
