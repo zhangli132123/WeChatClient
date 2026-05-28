@@ -9,12 +9,13 @@
 ### 登录页面
 
 <p align="left">
-  <img src="images/login.png" width="500">
+  <img src="images/Login.png" width="500">
 </p>
 
 <p align="left">
-  <img src="images/regist.png" width="500">
+  <img src="images/Regist.png" width="500">
 </p>
+
 
 
 ### 聊天界面
