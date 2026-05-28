@@ -8,19 +8,21 @@
 
 ### 登录页面
 
-![Login](C:\Users\dell\Desktop\WeChatClient项目截图\Login.png)![Regist](C:\Users\dell\Desktop\WeChatClient项目截图\Regist.png)  
+  ![登录界面](images/login.png)![注册界面](images/regist.png) 
 
 ### 聊天界面
 
-![FriendChat](C:\Users\dell\Desktop\WeChatClient项目截图\FriendChat.png)
+![聊天界面1](images/Chat1.png)
+
+![聊天界面2](images/Chat2.png)
 
 ### 好友列表
 
-![AddFriend](C:\Users\dell\Desktop\WeChatClient项目截图\AddFriend.png)
+![好友申请](images/AddFriend.png)
 
 ### AI 聊天
 
-![AIChat](C:\Users\dell\Desktop\WeChatClient项目截图\AIChat.png)
+![AI聊天](images/AIChat.png)
 
 ------
 
