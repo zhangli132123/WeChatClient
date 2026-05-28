@@ -8,21 +8,39 @@
 
 ### 登录页面
 
-  ![登录界面](images/login.png)![注册界面](images/regist.png) 
+<p align="left">
+  <img src="images/login.png" width="500">
+</p>
+
+<p align="left">
+  <img src="images/regist.png" width="500">
+</p>
+
 
 ### 聊天界面
 
-![聊天界面1](images/Chat1.png)
+<p align="left">
+  <img src="images/Chat1.png" width="500">
+</p>
 
-![聊天界面2](images/Chat2.png)
+<p align="left">
+  <img src="images/Chat2.png" width="500">
+</p>
+
 
 ### 好友列表
 
-![好友申请](images/AddFriend.png)
+<p align="left">
+  <img src="images/AddFriend.png" width="500">
+</p>
+
 
 ### AI 聊天
 
-![AI聊天](images/AIChat.png)
+<p align="left">
+  <img src="images/AIChat.png" width="500">
+</p>
+
 
 ------
 
